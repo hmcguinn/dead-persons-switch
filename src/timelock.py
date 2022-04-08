@@ -21,7 +21,7 @@ import time
 from Crypto.Protocol.SecretSharing import Shamir
 
 # answer = H(key)
-# start = VDF start 
+# start = VDF start
 # VDF end = key
 # contents = secret shared
 class TimeLockServer:
@@ -80,7 +80,7 @@ class TimeLockClient:
 
         self.split_contents(3,5)
         self.servers = None
-    
+
     def create_keys(self):
         private_key = ec.generate_private_key(ec.SECP256R1(),backend=default_backend())
         public_key = private_key.public_key()
@@ -231,5 +231,5 @@ class TimeLockUser:
             return parsedPlaintext
         except Exception as e:
             return None
-        
+
 
