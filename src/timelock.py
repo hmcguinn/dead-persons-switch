@@ -3,6 +3,7 @@
 
 import time
 from cryptography.hazmat.primitives import padding
+from collections import defaultdict
 import os
 import pickle
 import string
@@ -36,7 +37,7 @@ class TimeLockServer:
 
         self.last_check_in = time.time()
 
-    def check_in(self, signature, serialized, new_valid, start):
+    def check_in(self, signature, serialized, new_valid, start, new_contents):
         try:
             #import pdb; pdb.set_trace()
             self.pub_key.verify(signature, serialized, ec.ECDSA(hashes.SHA256()))
@@ -48,6 +49,7 @@ class TimeLockServer:
             self.valid_answer = new_valid
 
             self.last_check_in = None
+            self.contents = new_contents
         except Exception as e:
             raise
 
@@ -74,7 +76,9 @@ class TimeLockClient:
         self.ct = self.encrypt_contents()
 
         self.time_interval = t
-        self.shares = self.split_contents(3,5)
+        self.shares = defaultdict(list)
+
+        self.split_contents(3,5)
         self.servers = None
     
     def create_keys(self):
@@ -88,7 +92,7 @@ class TimeLockClient:
     def re_encrypt(self):
         self.update_aes_key()
         self.ct = self.encrypt_contents()
-        self.shares = self.split_contents(3,5)
+        self.split_contents(3,5)
 
     def encrypt_contents(self):
         aesgcm = AESGCM(self.aes)
@@ -97,18 +101,30 @@ class TimeLockClient:
         ciphertext = aesgcm.encrypt(b'0101010', serializedPlaintext, None)
         return ciphertext
 
+    def pad(self, m):
+        padder = padding.PKCS7(128).padder()
+        padded_data = padder.update(m)
+        padded = padded_data + padder.finalize()
+        return padded
+
+    def split_bytes(self, b):
+        split = [b[i:i+16] for i in range(0, len(b), 16)]
+        return split
 
     def split_contents(self, k, n):
         ct = self.encrypt_contents()
-        padder = padding.PKCS7(128).padder()
-        serialized = bytes(pickle.dumps(self.contents).hex(), 'ascii')
-        padded_data = padder.update(bytes(self.contents,'utf-8'))
-        padded = padded_data + padder.finalize()
+        padded = self.pad(ct)
+
+        split_data = self.split_bytes(padded)
+
+        self.shares = defaultdict(list)
+        for portion in split_data:
+            share = Shamir.split(k, n, portion)
+            for i, s in enumerate(share):
+                self.shares[i].append(s)
 
 
         #shares = Shamir.split(k, n, ct)
-        shares = Shamir.split(k, n, padded)
-        return shares
 
     def register_servers(self, servers):
         self.servers = servers
@@ -116,30 +132,30 @@ class TimeLockClient:
     def sign_time(self, priv, time):
         return priv.sign(time,ec.ECDSA(hashes.SHA256()))
 
-    def hash_ct(self):
+    def hash_key(self, key):
         digest = hashes.Hash(hashes.SHA256(),backend=default_backend())
-        digest.update(self.ct)
+        digest.update(key)
         return digest.finalize()
 
     def update_start(self):
         # TODO: update start with VDF
         return self.aes
 
-    def check_in(self): 
+    def check_in(self):
         serialized = bytes(pickle.dumps(time.time()).hex(), 'ascii')
         signed = self.sign_time(self.priv, serialized)
 
         self.re_encrypt()
 
-        sha256 = self.hash_ct()
+        sha256 = self.hash_key(self.aes)
         start = self.update_start()
 
-        for server in self.servers:
-            server.check_in(signed, serialized, sha256, start)
+        for i, server in enumerate(self.servers):
+            server.check_in(signed, serialized, sha256, start, self.shares[i])
 
     def register(self, n):
         servers = []
-        sha256 = self.hash_ct()
+        sha256 = self.hash_key(self.aes)
         for i in range(n):
             new_server = TimeLockServer(self.shares[i], self.pub, self.time_interval, self.aes, sha256)
             servers.append(new_server)
@@ -152,6 +168,7 @@ class TimeLockUser:
         self.start = None
         self.contents = None
         self.solved = None
+        self.ciphertext = None
 
     def request_start(self):
         start_set = set()
@@ -164,25 +181,55 @@ class TimeLockUser:
         return self.start
 
     def solve(self):
+        # TODO: set this
+        self.solved = None
         pass
+
+    def hash_key(self, key):
+        digest = hashes.Hash(hashes.SHA256(),backend=default_backend())
+        digest.update(key)
+        return digest.finalize()
 
     def present_solved(self):
         contents = []
         for server in self.servers:
-            share = server.solve(self.solved)
+            share = server.solve(self.hash_key(self.solved))
             if share == None:
                 print("error in solving")
             else:
                 contents.append(share)
         self.contents = contents
 
+
     def combine(self):
-        plaintext = Shamir.combine(self.contents)
+        recombined = []
+        for i in range(len(self.contents)):
+            temp = []
+            for j in range(len(self.contents[0])):
+                temp.append(self.contents[j][i])
+            plaintext = Shamir.combine(temp)
+            recombined.append(plaintext)
+
+        results =  b''.join(recombined)
+
         unpadder = padding.PKCS7(128).unpadder()
-        data = unpadder.update(plaintext)
-        parsedPlaintext = data + unpadder.finalize()
+        data = unpadder.update(results)
+        parsed = data + unpadder.finalize()
 
 
-        print(parsedPlaintext)
-        return parsedPlaintext
+        self.ciphertext = parsed
+        print(parsed)
+        return parsed
+
+    def decrypt(self):
+        try:
+            aesgcm = AESGCM(self.solved)
+            plaintext = aesgcm.decrypt(b'0101010', self.ciphertext, None)
+            hexPlaintext = ''.join(chr(x) for x in plaintext)
+            parsedPlaintext = pickle.loads(bytearray.fromhex(hexPlaintext))
+            print(parsedPlaintext)
+            return parsedPlaintext
+        except Exception as e:
+            return None
+        
 

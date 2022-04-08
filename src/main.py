@@ -73,9 +73,13 @@ for server in c.servers:
     pass
 user = TimeLockUser(c.servers)
 user.request_start()
-user.solved = c.servers[0].valid_answer
+user.solved = c.aes
 user.present_solved()
+#import pdb; pdb.set_trace()
 user.combine()
+plaintext = user.decrypt()
+if plaintext != "secret data":
+    print("did not decrypt successfully")
 """
 serialized = bytes(pickle.dumps(time.time()).hex(), 'ascii')
 signed = sign_time(priv, serialized)
