@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import time
+import subprocess
 from cryptography.hazmat.primitives import padding
 from collections import defaultdict
 import os
@@ -10,7 +11,7 @@ import string
 import copy
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
@@ -87,10 +88,9 @@ class TimeLockClient:
         return private_key, public_key
 
     def update_aes_key(self):
-        self.aes = os.urandom(16)
+        self.start = self.update_start()
 
     def re_encrypt(self):
-        self.update_aes_key()
         self.ct = self.encrypt_contents()
         self.split_contents(3,5)
 
@@ -112,8 +112,7 @@ class TimeLockClient:
         return split
 
     def split_contents(self, k, n):
-        ct = self.encrypt_contents()
-        padded = self.pad(ct)
+        padded = self.pad(self.ct)
 
         split_data = self.split_bytes(padded)
 
@@ -138,17 +137,31 @@ class TimeLockClient:
         return digest.finalize()
 
     def update_start(self):
+        seed = os.urandom(16)
+        #import pdb; pdb.set_trace()
+        hex_seed = seed.hex()
+
+        command = "vdf-cli " + hex_seed + " 2048"
+        #process = subprocess.Popen(command, shell=True)
+        result = subprocess.run(command, shell=True, stdout=subprocess.PIPE)
+        vdf_output = result.stdout.strip()
+
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(),length=32,salt=seed,iterations=390000,backend=default_backend())
+        key = kdf.derive(vdf_output)
+
+        self.aes = key
+
         # TODO: update start with VDF
-        return self.aes
+        return seed
 
     def check_in(self):
         serialized = bytes(pickle.dumps(time.time()).hex(), 'ascii')
         signed = self.sign_time(self.priv, serialized)
 
-        self.re_encrypt()
 
-        sha256 = self.hash_key(self.aes)
         start = self.update_start()
+        sha256 = self.hash_key(self.aes)
+        self.re_encrypt()
 
         for i, server in enumerate(self.servers):
             server.check_in(signed, serialized, sha256, start, self.shares[i])
@@ -169,6 +182,7 @@ class TimeLockUser:
         self.contents = None
         self.solved = None
         self.ciphertext = None
+        self.key = None
 
     def request_start(self):
         start_set = set()
@@ -181,9 +195,15 @@ class TimeLockUser:
         return self.start
 
     def solve(self):
-        # TODO: set this
-        self.solved = None
-        pass
+        command = "vdf-cli " + self.start.hex() + " 2048"
+        result = subprocess.run(command, shell=True, stdout=subprocess.PIPE)
+        vdf_output = result.stdout.strip()
+
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(),length=32,salt=self.start,iterations=390000,backend=default_backend())
+        key = kdf.derive(vdf_output)
+
+        self.solved = self.hash_key(key)
+        self.key = key
 
     def hash_key(self, key):
         digest = hashes.Hash(hashes.SHA256(),backend=default_backend())
@@ -193,7 +213,7 @@ class TimeLockUser:
     def present_solved(self):
         contents = []
         for server in self.servers:
-            share = server.solve(self.hash_key(self.solved))
+            share = server.solve(self.solved)
             if share == None:
                 print("error in solving")
             else:
@@ -223,13 +243,14 @@ class TimeLockUser:
 
     def decrypt(self):
         try:
-            aesgcm = AESGCM(self.solved)
+            aesgcm = AESGCM(self.key)
             plaintext = aesgcm.decrypt(b'0101010', self.ciphertext, None)
             hexPlaintext = ''.join(chr(x) for x in plaintext)
             parsedPlaintext = pickle.loads(bytearray.fromhex(hexPlaintext))
             print(parsedPlaintext)
             return parsedPlaintext
         except Exception as e:
+            print(e)
             return None
 
 

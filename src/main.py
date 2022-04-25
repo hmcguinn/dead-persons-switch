@@ -73,7 +73,10 @@ for server in c.servers:
     pass
 user = TimeLockUser(c.servers)
 user.request_start()
-user.solved = c.aes
+#user.solved = c.aes
+
+user.solve()
+
 user.present_solved()
 #import pdb; pdb.set_trace()
 user.combine()
