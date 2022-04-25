@@ -63,7 +63,12 @@ class TimeLockServer:
         return None
 
     def check_valid(self, answer):
-        return answer == self.valid_answer
+        #import pdb; pdb.set_trace()
+        command = "vdf-cli " + self.current_start.hex() + " 2048 " + str(answer)[2:][:-1]
+        #process = subprocess.Popen(command, shell=True)
+        result = subprocess.run(command, shell=True, stdout=subprocess.PIPE)
+        valid = result.stdout.strip()
+        return valid == b"Proof is valid"
 
 class TimeLockClient:
     def __init__(self, contents, t):
@@ -198,11 +203,12 @@ class TimeLockUser:
         command = "vdf-cli " + self.start.hex() + " 2048"
         result = subprocess.run(command, shell=True, stdout=subprocess.PIPE)
         vdf_output = result.stdout.strip()
+        print(vdf_output.hex())
 
         kdf = PBKDF2HMAC(algorithm=hashes.SHA256(),length=32,salt=self.start,iterations=390000,backend=default_backend())
         key = kdf.derive(vdf_output)
 
-        self.solved = self.hash_key(key)
+        self.solved = vdf_output
         self.key = key
 
     def hash_key(self, key):
